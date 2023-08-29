@@ -3,6 +3,7 @@ import config
 from pathlib import Path
 from dataclasses import dataclass
 from typing import List, Dict, Tuple
+import mym3u8
 
 headers = download_core.parse_header(config.header_file)
 

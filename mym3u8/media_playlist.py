@@ -32,21 +32,3 @@ class MediaPlaylist(playlist.Playlist):
         return sum(uri.duration for uri in self.uri_list)
 
 
-    def parse(content: str):
-        lines = content.splitlines()
-        lid = 0
-        global_tags = []
-        temporary_tags = []
-        sequence_number = 0
-        uri_list = []
-        while lid < len(lines):
-            line = lines[lid]
-            if len(line) == 0: continue # Blank lines are ignored
-            if line.startswith('#'):
-                if line.startswith('#EXT'):
-                    tag = Tag(line)
-                else:
-                    continue
-            else:
-                uri_list.append(URI(line, None, global_tags+temporary_tags))
-                temporary_tags.clear()

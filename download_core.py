@@ -19,7 +19,7 @@ def download(url: str, headers: Dict[str, str], timeout, max_retry_times) -> req
     raise requests.exceptions.RetryError(f'retry too many times for {url}') from errors[-1]
 
 def parse_header(header_file: Path) -> Dict[str, str]:
-    lines = header_file.read_text('utf8')
+    lines = header_file.read_text('utf8').splitlines()
     lid = 0
     headers = dict()
     while lid < len(lines):
@@ -31,7 +31,7 @@ def parse_header(header_file: Path) -> Dict[str, str]:
         else:
             k, v = k
             lid += 1
-        headers[k] = v
+        headers[k.strip()] = v.strip()
     return headers
 
 headers = None

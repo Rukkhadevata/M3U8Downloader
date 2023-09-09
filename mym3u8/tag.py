@@ -23,7 +23,6 @@ class AttributeList:
         self.parse(attr_text)
 
     def parse(self, attr_text: str):
-        attr_text = self.attr_text
         pivot = 0
         state = "KEY"
         while pivot < len(attr_text):
@@ -54,9 +53,7 @@ class AttributeList:
             end = start
         before_start_len = 0
         for c in self.attr_text[:start]:
-            before_start_len += (
-                len(repr(c)) - 2
-            )  # minus 2 for first quotation mark of repr
+            before_start_len += len(repr(c)) - 2  # minus 2 for quotation mark of repr
         error_len = 0
         for c in self.attr_text[start : end + 1]:
             error_len += len(repr(c)) - 2
@@ -148,6 +145,12 @@ class AttributeList:
                 return
         raise KeyError(f"{key} does not exists in attribute list")
 
+    def __contains__(self, key: str):
+        for attr in self.attr_list:
+            if attr.key == key:
+                return True
+        return False
+
 
 class Tag:
     pattern: str
@@ -197,12 +200,15 @@ class TagWithAttrList(Tag):
         )
         attr_text = re.match(re_pattern, line_text, re.S).group("attr_list")
         self.attr_list = AttributeList(attr_text)
-
+    
     def __getitem__(self, key: str):
         return self.attr_list[key]
 
     def __setitem__(self, key: str, value: str):
         self.attr_list[key] = value
+
+    def __contains__(self, key: str):
+        return key in self.attr_list
 
     def __str__(self):
         return re.sub(
@@ -213,10 +219,49 @@ class TagWithAttrList(Tag):
     def line_text(self):
         return str(self)
 
-
 @tag_manager.register
 class EXT_X_KEY(TagWithAttrList):
     pattern = "#EXT-X-KEY:<attribute-list>"
+
+
+@tag_manager.register
+class EXT_X_MAP(TagWithAttrList):
+    pattern = "#EXT-X-MAP:<attribute-list>"
+
+
+@tag_manager.register
+class EXT_X_DATERANGE(TagWithAttrList):
+    pattern = "#EXT-X-DATERANGE:<attribute-list>"
+
+
+@tag_manager.register
+class EXT_X_MEDIA(TagWithAttrList):
+    pattern = "#EXT-X-MEDIA:<attribute-list>"
+
+
+@tag_manager.register
+class EXT_X_STREAM_INF(TagWithAttrList):
+    pattern = "#EXT-X-STREAM-INF:<attribute-list>"
+
+
+@tag_manager.register
+class EXT_X_I_FRAME_STREAM_INF(TagWithAttrList):
+    pattern = "EXT-X-I-FRAME-STREAM-INF:<attribute-list>"
+
+
+@tag_manager.register
+class EXT_X_SESSION_DATA(TagWithAttrList):
+    pattern = "#EXT-X-SESSION-DATA:<attribute-list>"
+
+
+@tag_manager.register
+class EXT_X_SESSION_KEY(TagWithAttrList):
+    pattern = "#EXT-X-SESSION-KEY:<attribute-list>"
+
+
+@tag_manager.register
+class EXT_X_START(TagWithAttrList):
+    pattern = "#EXT-X-START:<attribute-list>"
 
 
 if __name__ == "__main__":

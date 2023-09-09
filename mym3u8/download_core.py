@@ -26,7 +26,7 @@ def parse_header(header_file: Path) -> Dict[str, str]:
         k = lines[lid].split(':', 1)
         if len(k) == 1 or len(k) == 2 and len(k[1]) == 0:
             k = k[0]
-            v = lines[lid]
+            v = lines[lid+1]
             lid += 2
         else:
             k, v = k

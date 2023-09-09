@@ -26,16 +26,15 @@ M3U8Line
     Segment
 """
 
-from .tags.tag import TagManager
+from .tag import tag_manager, TagWithAttrList
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Dict, Tuple
 from io import StringIO
-import socket
 import urllib.parse
 from collections import defaultdict
-from enum import Enum
 import math
+import copy
 
 
 @dataclass
@@ -44,11 +43,11 @@ class URI:
 
     @property
     def is_m3u(self):
-        assert self.url.endswith(".m3u8") or self.url.endswith(".m3u")
+        return self.url.endswith(".m3u8") or self.url.endswith(".m3u")
 
     @property
     def is_ts(self):
-        assert self.url.endswith(".ts")
+        return self.url.endswith(".ts")
 
     def urlparse(self):
         return urllib.parse.urlparse(self.url)
@@ -65,7 +64,7 @@ class Cache:
     category: str
 
 
-class M3U8URIManger:
+class CacheNameAssigner:
     def __init__(self, root: str) -> None:
         self.root = root
         self.url2cache: Dict[str, Cache] = dict()
@@ -118,13 +117,13 @@ class M3U8Line:
         else:
             return URILine(line_text)
 
-    def fully_qualified(self, uri_manager: M3U8URIManger) -> str:
+    def fully_qualified(self, cache_name_assigner: CacheNameAssigner) -> str:
         return self.line_text
 
-    def local(self, uri_manager: M3U8URIManger) -> str:
+    def local(self, cache_name_assigner: CacheNameAssigner) -> str:
         return self.line_text
 
-    def dump_uri(self, uri_manager: M3U8URIManger):
+    def dump_uri(self, cache_name_assigner: CacheNameAssigner):
         pass
 
 
@@ -138,55 +137,81 @@ class CommentLine(M3U8Line):
 
 class TagLine(M3U8Line):
     def __init__(self, line_text):
-        super(self).__init__(line_text)
-        self.tag = TagManager.get(line_text)
+        super().__init__(line_text)
+        self.tag = tag_manager.get(line_text)
 
-    def fully_qualified(self, uri_manager: M3U8URIManger) -> str:
-        return self.tag.fully_qualified(uri_manager)
+    def copy(self):
+        return copy.deepcopy(self)
 
-    def local(self, uri_manager: M3U8URIManger) -> str:
-        return self.tag.local(uri_manager)
+    def fully_qualified(self, cache_name_assigner: CacheNameAssigner) -> str:
+        if isinstance(self.tag, TagWithAttrList):
+            if 'URI' in self.tag:
+                tag_line = self.copy()
+                tag_line['URI'] = cache_name_assigner.abs_uri(self.tag['URI'])
+                return str(tag_line)
+        else:
+            return self.line_text
 
-    def dump_uri(self, uri_manager: M3U8URIManger):
-        if self.tag.has_uri:
-            for uri in self.tag.uri_list:
-                uri_manager.register_uri(uri, self.tag.category)
+    def local(self, cache_name_assigner: CacheNameAssigner) -> str:
+        if isinstance(self.tag, TagWithAttrList):
+            if 'URI' in self.tag:
+                tag_line = self.copy()
+                tag_line['URI'] = cache_name_assigner.cache_name(self.tag['URI'])
+                return str(tag_line)
+        else:
+            return self.line_text
+
+    def dump_uri(self, cache_name_assigner: CacheNameAssigner):
+        if isinstance(self.tag, TagWithAttrList):
+            if 'URI' in self.tag:
+                cache_name_assigner.register_uri(self.tag.attr_list['URI'])
 
 
 class URILine(M3U8Line):
     category = "uri_line"
 
-    def fully_qualified(self, uri_manager: M3U8URIManger) -> str:
-        return uri_manager.abs_uri(self.line_text)
+    def fully_qualified(self, cache_name_assigner: CacheNameAssigner) -> str:
+        return cache_name_assigner.abs_uri(self.line_text)
 
-    def local(self, uri_manager: M3U8URIManger) -> str:
-        return uri_manager.cache_name(self.line_text, self.category)
+    def local(self, cache_name_assigner: CacheNameAssigner) -> str:
+        return cache_name_assigner.cache_name(self.line_text, self.category)
 
-    def dump_uri(self, uri_manager: M3U8URIManger):
-        return uri_manager.register_uri(self.line_text, self.category)
+    def dump_uri(self, cache_name_assigner: CacheNameAssigner):
+        return cache_name_assigner.register_uri(self.line_text, self.category)
 
 
-@dataclass
 class Playlist(URI):
-    lines: List[M3U8Line]
-
-    def __init__(self, content: str, m3u8_url: str):
+    def __init__(self, m3u8_url: str, content: str=None):
         self.url = m3u8_url
-        self.lines = [M3U8Line.parse(line) for line in content.splitlines()]
-        self.uri_manager = M3U8URIManger(m3u8_url)
+        if content is None:
+            self.content = self.download()
+        else:
+            self.content = content
+        self.lines: List[M3U8Line] = [M3U8Line.parse(line) for line in self.content.splitlines()]
+        self.cache_name_assigner = CacheNameAssigner(m3u8_url)
         for line in self.lines:
-            line.dump_uri(self.uri_manager)
+            line.dump_uri(self.cache_name_assigner)
         self.lines_fully_qualified = [
-            line.fully_qualified(self.uri_manager) for line in self.lines
+            line.fully_qualified(self.cache_name_assigner) for line in self.lines
         ]
-        self.lines_local = [line.local(self.uri_manager) for line in self.lines]
+        self.lines_local = [line.local(self.cache_name_assigner) for line in self.lines]
 
-    def check_weird(self):
-        if self.is_m3u8_list and self.is_segment_list:
-            raise ValueError(
-                "Both m3u8_list and segment list exist, which is a weird file"
-            )
-        elif not self.is_m3u8_list and not self.is_segment_list:
-            raise ValueError(
-                "Both m3u8_list and segment list not exist, which is a weird file"
-            )
+    def is_master_playlist(self):
+        for line in self.lines:
+            if isinstance(line, URILine):
+                if not URI(line.line_text).is_m3u:
+                    return False
+        return True
+    
+    def is_media_playlist(self):
+        for line in self.lines:
+            if isinstance(line, URILine):
+                if URI(line).is_m3u:
+                    return False
+        return True
+
+    def download(self):
+        from .import download_core
+        with download_core.download(self.url, download_core.headers, 15, 1) as resp:
+            return resp.content.decode('utf8')
+

@@ -1,3 +1,4 @@
-from . import tags
+from .playlist import Playlist, URILine
+from . import playlist, tag
 
-__all__ = ['tags']
+__all__ = ['tag', 'Playlist']

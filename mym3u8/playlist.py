@@ -22,19 +22,26 @@ segments 有可能长这样：
 对于同一个URI，要保证只下载一次，cache name需要统一管理，每次遇到URI，将类别传递进cache管理器，生成cache name
 
 M3U8Line
-    Tag
-    Segment
+    BlankLine
+    CommentLine
+    TagLine
+    URILine
+
+每个 M3U8 文件都应该纳入 CacheNameAssigner 中，所以CNA应该放到 Playlist 之外，之后统一由下载器下载
 """
 
-from .tag import tag_manager, TagWithAttrList
+from .tag import TagManager, TagWithAttrList
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 from io import StringIO
 import urllib.parse
 from collections import defaultdict
 import math
 import copy
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -58,49 +65,6 @@ class URI:
 
 
 @dataclass
-class Cache:
-    idx: int
-    suffix: str
-    category: str
-
-
-class CacheNameAssigner:
-    def __init__(self, root: str) -> None:
-        self.root = root
-        self.url2cache: Dict[str, Cache] = dict()
-        self.cat2cache_list: Dict[str, List[Cache]] = defaultdict(list)
-        self.category_counter: Dict[str, int] = defaultdict(int)
-
-    def abs_uri(self, uri: str) -> str:
-        return urllib.parse.urljoin(self.root, uri)
-
-    def register_uri(self, uri: str, category: str):
-        if not isinstance(category, str) or len(category) == 0:
-            raise ValueError(f"{category} is not a category name")
-        abs_uri = self.abs_uri(uri)
-        if abs_uri in self.url2cache:
-            return abs_uri, self.url2cache[abs_uri]
-
-        counter = self.category_counter[category]
-        self.category_counter[category] += 1
-        suffix = Path(urllib.parse.urlparse(abs_uri).path).suffix
-        cache = Cache(counter, suffix, category)
-        self.url2cache[abs_uri] = cache
-        self.cat2cache_list[category].append(category)
-
-    def cache_name(self, uri: str, category: str):
-        # 必须先调用一次 register_uri, 才能调用 cache_name
-        # 目的是得到同类 category 的总数量，方便计算前导零的数量
-        abs_uri = self.abs_uri(uri)
-        cache = self.url2cache[abs_uri]
-        counter = self.category_counter[category]
-        if counter == 0:
-            raise ValueError(f"category {category!r} is not registered")
-        digit_num = math.floor(math.log10(counter)) + 1
-        return f"{cache.idx:0{digit_num}d}{cache.suffix}"
-
-
-@dataclass
 class M3U8Line:
     line_text: str
 
@@ -117,13 +81,10 @@ class M3U8Line:
         else:
             return URILine(line_text)
 
-    def fully_qualified(self, cache_name_assigner: CacheNameAssigner) -> str:
-        return self.line_text
+    def replace_uri_with(self, uri: str) -> "M3U8Line":
+        raise NotImplementedError
 
-    def local(self, cache_name_assigner: CacheNameAssigner) -> str:
-        return self.line_text
-
-    def dump_uri(self, cache_name_assigner: CacheNameAssigner):
+    def get_uri(self) -> str:
         pass
 
 
@@ -138,63 +99,43 @@ class CommentLine(M3U8Line):
 class TagLine(M3U8Line):
     def __init__(self, line_text):
         super().__init__(line_text)
-        self.tag = tag_manager.get(line_text)
+        self.tag = TagManager.build_tag(line_text)
 
-    def copy(self):
-        return copy.deepcopy(self)
-
-    def fully_qualified(self, cache_name_assigner: CacheNameAssigner) -> str:
+    def replace_uri_with(self, uri) -> "TagLine":
         if isinstance(self.tag, TagWithAttrList):
-            if 'URI' in self.tag:
-                tag_line = self.copy()
-                tag_line['URI'] = cache_name_assigner.abs_uri(self.tag['URI'])
-                return str(tag_line)
-        else:
-            return self.line_text
+            if "URI" in self.tag:
+                self.tag["URI"] = uri
+                self.line_text = str(self.tag)
 
-    def local(self, cache_name_assigner: CacheNameAssigner) -> str:
+    def get_uri(self):
         if isinstance(self.tag, TagWithAttrList):
-            if 'URI' in self.tag:
-                tag_line = self.copy()
-                tag_line['URI'] = cache_name_assigner.cache_name(self.tag['URI'])
-                return str(tag_line)
-        else:
-            return self.line_text
-
-    def dump_uri(self, cache_name_assigner: CacheNameAssigner):
-        if isinstance(self.tag, TagWithAttrList):
-            if 'URI' in self.tag:
-                cache_name_assigner.register_uri(self.tag.attr_list['URI'])
+            if "URI" in self.tag:
+                return self.tag.attr_list["URI"]
 
 
 class URILine(M3U8Line):
-    category = "uri_line"
+    def replace_uri_with(self, uri: str) -> "URILine":
+        self.line_text = uri
 
-    def fully_qualified(self, cache_name_assigner: CacheNameAssigner) -> str:
-        return cache_name_assigner.abs_uri(self.line_text)
-
-    def local(self, cache_name_assigner: CacheNameAssigner) -> str:
-        return cache_name_assigner.cache_name(self.line_text, self.category)
-
-    def dump_uri(self, cache_name_assigner: CacheNameAssigner):
-        return cache_name_assigner.register_uri(self.line_text, self.category)
+    def get_uri(self) -> str:
+        return self.line_text
 
 
 class Playlist(URI):
-    def __init__(self, m3u8_url: str, content: str=None):
+    def __init__(self, m3u8_url: str, content: str = None):
         self.url = m3u8_url
         if content is None:
+            logger.info(f"Download m3u8 content from {m3u8_url}")
             self.content = self.download()
         else:
             self.content = content
-        self.lines: List[M3U8Line] = [M3U8Line.parse(line) for line in self.content.splitlines()]
-        self.cache_name_assigner = CacheNameAssigner(m3u8_url)
-        for line in self.lines:
-            line.dump_uri(self.cache_name_assigner)
-        self.lines_fully_qualified = [
-            line.fully_qualified(self.cache_name_assigner) for line in self.lines
+
+        self.lines: List[M3U8Line] = [
+            M3U8Line.parse(line) for line in self.content.splitlines()
         ]
-        self.lines_local = [line.local(self.cache_name_assigner) for line in self.lines]
+
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}(m3u8_url={self.url!r})"
 
     def is_master_playlist(self):
         for line in self.lines:
@@ -202,7 +143,7 @@ class Playlist(URI):
                 if not URI(line.line_text).is_m3u:
                     return False
         return True
-    
+
     def is_media_playlist(self):
         for line in self.lines:
             if isinstance(line, URILine):
@@ -210,8 +151,82 @@ class Playlist(URI):
                     return False
         return True
 
-    def download(self):
-        from .import download_core
-        with download_core.download(self.url, download_core.headers, 15, 1) as resp:
-            return resp.content.decode('utf8')
+    def download(self) -> str:
+        from . import download_core
 
+        with download_core.download(self.url, download_core.headers, 15, 1) as resp:
+            return resp.content.decode("utf8")
+
+    def to_abs_playlist(self) -> "Playlist":
+        playlist = copy.deepcopy(self)
+        for line in playlist.lines:
+            uri = line.get_uri()
+            if uri is not None:
+                fq_uri = urllib.parse.urljoin(playlist.url, uri)
+                line.replace_uri_with(fq_uri)
+        return playlist
+
+
+@dataclass
+class Cache:
+    idx: int
+    url: str
+    ext: str
+
+
+class CacheNameAssigner:
+    """register urls and gives them"""
+
+    def __init__(self) -> None:
+        self.url2cache: Dict[str, Cache] = dict()
+        self.ext2cache_list: Dict[str, List[Cache]] = defaultdict(list)
+        self.ext_counter: Dict[str, int] = defaultdict(int)
+
+    def register_uri(self, uri: str, ext: Optional[str] = None):
+        if ext is None:
+            ext = Path(uri).suffix[1:]
+        if not isinstance(ext, str) or len(ext) == 0:
+            raise ValueError(f"{ext} is not a valid extension name")
+        if uri in self.url2cache:
+            return self.url2cache[uri]
+
+        counter = self.ext_counter[ext]
+        self.ext_counter[ext] += 1
+        cache = Cache(counter, uri, ext)
+        self.url2cache[uri] = cache
+        self.ext2cache_list[ext].append(cache)
+        return cache
+
+    def register_playlist_uri(self, playlist: Playlist):
+        self.register_uri(playlist.url, ext="m3u8")
+        for line in playlist.to_abs_playlist().lines:
+            uri = line.get_uri()
+            if uri is not None:
+                self.register_uri(uri)
+
+    def get_cache(self, uri: str):
+        return self.url2cache[uri]
+
+    def cache_name(self, uri: str):
+        # 必须先调用一次 register_uri, 才能调用 cache_name
+        # 目的是得到同 ext 的总数量，方便计算前导零的数量
+        cache = self.url2cache[uri]
+        counter = self.ext_counter[cache.ext]
+        if counter == 0:
+            raise ValueError(f"suffix {cache.ext!r} is not registered")
+        digit_num = math.floor(math.log10(counter)) + 1
+        if URI(uri).is_m3u:
+            return f"{cache.ext}/{cache.idx:0{digit_num}d}.local.{cache.ext}"
+        else:
+            return f"{cache.ext}/{cache.idx:0{digit_num}d}.{cache.ext}"
+
+
+def to_local_playlist(playlist: Playlist, cna: CacheNameAssigner) -> Playlist:
+    playlist = copy.deepcopy(playlist)
+    for line in playlist.lines:
+        uri = line.get_uri()
+        if uri is not None:
+            fq_uri = urllib.parse.urljoin(playlist.url, uri)
+            cache_name = cna.cache_name(fq_uri)
+            line.replace_uri_with(cache_name)
+    return playlist

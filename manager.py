@@ -1,13 +1,26 @@
+"""
+对于m3u8文件，我希望将3种形式都保存成cache（3种内容，3种文件名）
+对于ts、key文件，我只希望保存它们原本的形式（仅本地文件名）
+m3u8的local形式需要指向本地文件名，不仅是ts、key文件，还有m3u8文件
+
+media playlist 内部出现的 URI 以 media playlist 的 URI 为 root
+master playlist 可以和 media playlist 处于不同的目录，所以不能以最外层、最原始的 master playlist 作为所有 URI 的 root
+每个 media playlist 内部必须自己维护一个 cache name assigner
+
+
+"""
 import mym3u8.download_core as download_core
 import config
 from pathlib import Path
-from dataclasses import dataclass
 from typing import List, Dict, Tuple
 import mym3u8
 import json
-from mym3u8.download_core import download
-from urllib.parse import urljoin
+import logging
+import copy
+import urllib.parse
+
 download_core.headers = download_core.parse_header(config.header_file)
+logger = logging.getLogger(__name__)
 
 
 def save_arg(task_dir: Path, m3u8_url: str, task_name: str):
@@ -17,35 +30,56 @@ def save_arg(task_dir: Path, m3u8_url: str, task_name: str):
     )
 
 
-def select_playlist(playlist: mym3u8.Playlist):
-    m3u8_urls = []
-    for line in playlist.lines:
-        if isinstance(line, mym3u8.URILine):
-            print(f"[{len(m3u8_urls)}] {line.line_text}")
-            m3u8_urls.append(line.line_text)
-        else:
-            print(line.line_text)
+def dump_m3u8(task_dir: Path,
+    playlist: mym3u8.Playlist,  assigner: mym3u8.CacheNameAssigner
+):
+    (task_dir / 'm3u8').mkdir(exist_ok=True)
+    cache = assigner.get_cache(playlist.url)
+    original = task_dir / f"m3u8/{cache.idx}.original.{cache.ext}"
+    original.write_text(
+        "".join(line.line_text + "\n" for line in playlist.lines),
+        encoding="utf8",
+    )
 
-    while True:
-        try:
-            user_choice = int(input(f"Please choose a url(0~{len(m3u8_urls)-1}):"))
-            if 0 <= user_choice < len(m3u8_urls):
-                return urljoin(playlist.url, m3u8_urls[user_choice])
-        except Exception:
-            continue
+    absolute = task_dir / f"m3u8/{cache.idx}.absolute.{cache.ext}"
+    absolute.write_text(
+        "".join(line.line_text + "\n" for line in playlist.to_abs_playlist().lines),
+        encoding="utf8",
+    )
+
+    local = task_dir / f"m3u8/{cache.idx}.local.{cache.ext}"
+    local.write_text(
+        "".join(
+            line.line_text + "\n" for line in mym3u8.to_local_playlist(playlist, assigner).lines
+        ),
+        encoding="utf8",
+    )
+
+def download_resources(cna: mym3u8.CacheNameAssigner):
+    pass
 
 
 def launch_task(m3u8_url, task_name):
-    task_dir = config.save_root / Path(task_name)
+    task_dir = config.save_root / task_name
     save_arg(task_dir, m3u8_url, task_name)
-    m3u8_file_original = task_dir / f"{task_name}.original.m3u8"
-    m3u8_file_local = task_dir / f"{task_name}.local.m3u8"
-    m3u8_file_abs = task_dir / f"{task_name}.abs.m3u8"
-    while (playlist := mym3u8.Playlist(m3u8_url)).is_master_playlist():
-        m3u8_url = select_playlist(playlist)
-    print(playlist)
+    logger.info(f"task dir: {task_dir}")
+    config.dictConfig(task_dir)
+    playlists: List[mym3u8.Playlist] = []
+    cna = mym3u8.CacheNameAssigner()
+    while True:
+        playlist = mym3u8.Playlist(m3u8_url)
+        playlists.append(playlist)
+        cna.register_playlist_uri(playlist)
+        if playlist.is_master_playlist():
+            logger.info(
+                f"{playlist!r} is a master playlist. Ask user to select a sub playlist"
+            )
+            playlist = mym3u8.MasterPlaylist(playlist)
+            m3u8_url = playlist.select_playlist()
+        else:
+            break
 
-launch_task(
-    'https://d3b4hd2s3d140t.cloudfront.net/douyin/20210921/GW8B8vC6/index.m3u8',
-    'asd'
-)
+    for playlist in playlists:
+        dump_m3u8(task_dir, playlist, cna)
+    download_resources(cna)
+

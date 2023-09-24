@@ -166,25 +166,23 @@ class Tag:
         return self.line_text
 
 
-@dataclass
 class TagManager:
-    name2class: Dict[str, Tag]
+    name2class: Dict[str, Tag] = {}
 
-    def get(self, line: str) -> Tag:
+    @classmethod
+    def build_tag(cls, line: str) -> Tag:
         tag_name = line.split(":", 1)[0]
-        clazz = self.name2class.get(tag_name)
+        clazz = cls.name2class.get(tag_name)
         if clazz is None:
             return Tag(line)
         else:
             return clazz(line)
 
-    def register(self, clazz: Tag):
+    @classmethod
+    def register(cls, clazz: Tag):
         tag_name, _ = clazz.pattern.split(":", 1)
-        self.name2class[tag_name] = clazz
+        cls.name2class[tag_name] = clazz
         return clazz
-
-
-tag_manager = TagManager(dict())
 
 
 class TagWithAttrList(Tag):
@@ -219,53 +217,53 @@ class TagWithAttrList(Tag):
     def line_text(self):
         return str(self)
 
-@tag_manager.register
+@TagManager.register
 class EXT_X_KEY(TagWithAttrList):
     pattern = "#EXT-X-KEY:<attribute-list>"
 
 
-@tag_manager.register
+@TagManager.register
 class EXT_X_MAP(TagWithAttrList):
     pattern = "#EXT-X-MAP:<attribute-list>"
 
 
-@tag_manager.register
+@TagManager.register
 class EXT_X_DATERANGE(TagWithAttrList):
     pattern = "#EXT-X-DATERANGE:<attribute-list>"
 
 
-@tag_manager.register
+@TagManager.register
 class EXT_X_MEDIA(TagWithAttrList):
     pattern = "#EXT-X-MEDIA:<attribute-list>"
 
 
-@tag_manager.register
+@TagManager.register
 class EXT_X_STREAM_INF(TagWithAttrList):
     pattern = "#EXT-X-STREAM-INF:<attribute-list>"
 
 
-@tag_manager.register
+@TagManager.register
 class EXT_X_I_FRAME_STREAM_INF(TagWithAttrList):
     pattern = "EXT-X-I-FRAME-STREAM-INF:<attribute-list>"
 
 
-@tag_manager.register
+@TagManager.register
 class EXT_X_SESSION_DATA(TagWithAttrList):
     pattern = "#EXT-X-SESSION-DATA:<attribute-list>"
 
 
-@tag_manager.register
+@TagManager.register
 class EXT_X_SESSION_KEY(TagWithAttrList):
     pattern = "#EXT-X-SESSION-KEY:<attribute-list>"
 
 
-@tag_manager.register
+@TagManager.register
 class EXT_X_START(TagWithAttrList):
     pattern = "#EXT-X-START:<attribute-list>"
 
 
 if __name__ == "__main__":
-    tag3 = tag_manager.get(
+    tag3 = TagManager.build_tag(
         '#EXT-X-KEY:FUCK=123,GIRL=44.32,BOY=-334.2,MAIN=-4,YOU="ab3=e,r3,r",BABY=eNU3,RESOLUTION=1920x1080'
     )
     print(tag3)
@@ -273,7 +271,7 @@ if __name__ == "__main__":
     print(tag3.line_text)
 
     try:
-        tag3 = tag_manager.get(
+        tag3 = TagManager.build_tag(
             '#EXT-X-KEY:FUCK=12\t3,GIRL=44.32,BOY=-334.2,MAIN=-4,YOU="ab\n\r3=e",R3,r",BABY=eNU3,RESOLUTION=1920x1080'
         )
     except Exception as e:

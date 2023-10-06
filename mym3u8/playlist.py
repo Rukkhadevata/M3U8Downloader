@@ -40,6 +40,7 @@ from collections import defaultdict
 import math
 import copy
 import logging
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -104,13 +105,13 @@ class TagLine(M3U8Line):
     def replace_uri_with(self, uri) -> "TagLine":
         if isinstance(self.tag, TagWithAttrList):
             if "URI" in self.tag:
-                self.tag["URI"] = uri
+                self.tag["URI"] = f'"{uri}"'
                 self.line_text = str(self.tag)
 
     def get_uri(self):
         if isinstance(self.tag, TagWithAttrList):
             if "URI" in self.tag:
-                return self.tag.attr_list["URI"]
+                return self.tag.attr_list["URI"].strip('"')
 
 
 class URILine(M3U8Line):
@@ -173,6 +174,15 @@ class Cache:
     url: str
     ext: str
 
+class CacheJsonEncoder(json.JSONEncoder):
+    def default(self, o: Cache):
+        return {'idx': o.idx, 'url':o.url, 'ext':o.ext}
+
+def cache_from_str(o: dict):
+    try:
+        return Cache(idx=o['idx'], url=o['url'], ext=o['ext'])
+    except:
+        return o
 
 class CacheNameAssigner:
     """register urls and gives them"""
@@ -219,6 +229,17 @@ class CacheNameAssigner:
             return f"{cache.ext}/{cache.idx:0{digit_num}d}.local.{cache.ext}"
         else:
             return f"{cache.ext}/{cache.idx:0{digit_num}d}.{cache.ext}"
+
+    def dump(self, file: Path):
+        with file.open('w', encoding='utf8') as f:
+            json.dump(self.url2cache, fp=f, cls=CacheJsonEncoder, indent=4, ensure_ascii=False)
+
+    def load(self, file: Path):
+        with file.open('r', encoding='utf8') as f:
+            data = json.load(f, object_hook=cache_from_str)
+        for cache in data.values():
+            self.register_uri(cache.url, cache.ext)
+            
 
 
 def to_local_playlist(playlist: Playlist, cna: CacheNameAssigner) -> Playlist:
